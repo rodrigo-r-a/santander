@@ -1,0 +1,666 @@
+---
+title: "Santander"
+author: "Rodrigo Rivera"
+date: "January 10, 2017"
+output: html_document
+---
+#Competition Details
+Under their current system, a small number of Santander’s customers receive many recommendations while many others rarely see any resulting in an uneven customer experience. In their second competition, Santander is challenging Kagglers to predict which products their existing customers will use in the next month based on their past behavior and that of similar customers.
+
+With a more effective recommendation system in place, Santander can better meet the individual needs of all customers and ensure their satisfaction no matter where they are in life.
+
+Disclaimer: This data set does not include any real Santander Spain's customer, and thus it is not representative of Spain's customer base. 
+
+#Data Information
+In this competition, you are provided with 1.5 years of customers behavior data from Santander bank to predict what new products customers will purchase. The data starts at 2015-01-28 and has monthly records of products a customer has, such as "credit card", "savings account", etc. You will predict what additional products a customer will get in the last month, 2016-06-28, in addition to what they already have at 2016-05-28. These products are the columns named: ind_(xyz)_ult1, which are the columns #25 - #48 in the training data. You will predict what a customer will buy in addition to what they already had at 2016-05-28. 
+
+The test and train sets are split by time, and public and private leaderboard sets are split randomly.
+
+Please note: This sample does not include any real Santander Spain customers, and thus it is not representative of Spain's customer base. 
+
+#Procesando la Data
+Cargando librerías necesarias
+```{r lib, cache = TRUE}
+setwd("~/Desktop/Business/Kaggle/Santander")
+library(AppliedPredictiveModeling)
+library(caret)
+library(ElemStatLearn)
+library(pgmm)
+library(rpart)
+library(gbm)
+library(lubridate)
+library(forecast)
+library(e1071)
+library(randomForest)
+library(dplyr)
+```
+
+
+Leyendo y Preprocesando la Data
+```{r data, cache = TRUE}
+train <- read.csv("train_ver2.csv")
+names(train)
+sapply(train, class)
+train[train$ind_empleado == "", 3] = "N"
+train <- train[complete.cases(train$pais_residencia), ] #13619575
+train[train$sexo == "", 5] = NA
+train <- train[complete.cases(train$sexo), ] #13619505
+train <- train[complete.cases(train$tiprel_1mes), ]
+train[train$conyuemp == "", 3] = "N"
+train <- train[complete.cases(train$canal_entrada), ]
+train <- train[complete.cases(train$renta), ]
+train <- mutate(train, wday = wday(fecha_dato, label = TRUE))
+train <- mutate(train, antiguedad = as.numeric(difftime(as.Date(fecha_dato), as.Date(fecha_alta), units="days")))
+dim(train)
+quantile(train$renta, na.rm = T)
+train <- mutate(train, claseRenta = renta)
+train[, 50] = 1 #medio
+train[train$renta < quantile(train$renta)[2], 50] = 0 #bajo
+train[train$renta > quantile(train$renta)[4], 50] = 2 #alto
+table(train$claseRenta)
+#View(head(train))
+df <- train[train$ncodpers == 1375586, ]
+#View(df)
+
+#Decidiendo que variables predecir (si muestran NZV -near zero variance- no tiene sentido predecirlas)
+(table(train$ind_ahor_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_aval_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_cco_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_cder_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_cno_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_ctju_fin_ult1))/length(train$fecha_dato) #quizas
+(table(train$ind_ctma_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_ctop_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_ctpp_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_deco_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_deme_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_dela_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_ecue_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_fond_fin_ult1))/length(train$fecha_dato) #quizas
+(table(train$ind_hip_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_plan_fin_ult1))/length(train$fecha_dato) #quizas
+(table(train$ind_pres_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_reca_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_tjcr_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_valo_fin_ult1))/length(train$fecha_dato) #si
+(table(train$ind_viv_fin_ult1))/length(train$fecha_dato) #no
+(table(train$ind_nomina_ult1))/length(train$fecha_dato) #si
+(table(train$ind_nom_pens_ult1))/length(train$fecha_dato) #si
+(table(train$ind_recibo_ult1))/length(train$fecha_dato) #si
+
+#Pasando a factor los 'y'
+train$ind_cco_fin_ult1 <- as.factor(train$ind_cco_fin_ult1)
+train$ind_cno_fin_ult1 <- as.factor(train$ind_cno_fin_ult1)
+train$ind_ctop_fin_ult1 <- as.factor(train$ind_ctop_fin_ult1)
+train$ind_ctpp_fin_ult1 <- as.factor(train$ind_ctpp_fin_ult1)
+train$ind_dela_fin_ult1 <- as.factor(train$ind_dela_fin_ult1)
+train$ind_ecue_fin_ult1 <- as.factor(train$ind_ecue_fin_ult1)
+train$ind_hip_fin_ult1 <- as.factor(train$ind_hip_fin_ult1)
+train$ind_pres_fin_ult1 <- as.factor(train$ind_pres_fin_ult1)
+train$ind_reca_fin_ult1 <- as.factor(train$ind_reca_fin_ult1)
+train$ind_tjcr_fin_ult1 <- as.factor(train$ind_tjcr_fin_ult1)
+train$ind_valo_fin_ult1 <- as.factor(train$ind_valo_fin_ult1)
+train$ind_nomina_ult1 <- as.factor(train$ind_nomina_ult1)
+train$wday <- as.numeric(train$wday)
+train$claseRenta <- as.factor(train$claseRenta)
+train$ind_actividad_cliente <- as.factor(train$ind_actividad_cliente)
+train$age <- as.numeric(train$age)
+sapply(train, class)
+```
+
+```{r, echo = FALSE}
+#dividiendo la data
+x <- 1000
+traina <- train[1:x,]
+```
+
+```{r partition, cache = TRUE}
+inTrain <- createDataPartition(y=traina$ind_cco_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina[inTrain,]
+```
+
+#Modelo
+Escogiendo el mejor modelo para cada variable en base al accuracy.
+```{r regs, cache = TRUE}
+set.seed(502)
+#CCO
+ctop <- train[train$ind_cco_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_cco_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_cco_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestacco <- traina2[-inTrain,]
+#RF
+system.time(fit1cco <- train(ind_cco_fin_ult1 ~ ind_empleado + pais_residencia + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1cco <- predict(fit1cco, stestacco)
+table(pred1cco)
+confusionMatrix(pred1cco, stestacco$ind_cco_fin_ult1)
+confusionMatrix(pred1cco, stestacco$ind_cco_fin_ult1)$overall[1] #92%
+#GBM
+system.time(fit2cco <- train(ind_cco_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2cco <- predict(fit2cco, stestacco)
+table(pred2cco)
+confusionMatrix(pred2cco, stestacco$ind_cco_fin_ult1)
+confusionMatrix(pred2cco, stestacco$ind_cco_fin_ult1)$overall[1] #94.6%
+#GLM
+system.time(fit3cco <- train(ind_cco_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3cco <- predict(fit3cco, stestacco)
+table(pred3cco)
+confusionMatrix(pred3cco, stestacco$ind_cco_fin_ult1)
+confusionMatrix(pred3cco, stestacco$ind_cco_fin_ult1)$overall[1] #92.33%
+#Promedio
+ccoprom <- (as.numeric(pred2cco) + as.numeric(pred1cco) + as.numeric(pred3cco) - 3)/3
+ccoprom <- round(ccoprom)
+table(ccoprom)
+confusionMatrix(ccoprom, stestacco$ind_cco_fin_ult1)$overall[1] #92%
+
+
+#cno
+ctop <- train[train$ind_cno_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_cno_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_cno_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestacno <- traina2[-inTrain,]
+#RF
+system.time(fit1cno <- train(ind_cno_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1cno <- predict(fit1cno, stestacno)
+table(pred1cno)
+confusionMatrix(pred1cno, stestacno$ind_cno_fin_ult1)
+confusionMatrix(pred1cno, stestacno$ind_cno_fin_ult1)$overall[1] #94.3%
+#GBM
+system.time(fit2cno <- train(ind_cno_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2cno <- predict(fit2cno, stestacno)
+table(pred2cno)
+confusionMatrix(pred2cno, stestacno$ind_cno_fin_ult1)
+confusionMatrix(pred2cno, stestacno$ind_cno_fin_ult1)$overall[1] #94.3%
+#GLM
+system.time(fit3cno <- train(ind_cno_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3cno <- predict(fit3cno, stestacno)
+table(pred3cno)
+confusionMatrix(pred3cno, stestacno$ind_cno_fin_ult1)
+confusionMatrix(pred3cno, stestacno$ind_cno_fin_ult1)$overall[1] #70.2%
+#Promedio
+cnoprom <- (as.numeric(pred2cno) + as.numeric(pred1cno) + as.numeric(pred3cno) - 3)/3
+cnoprom <- round(cnoprom)
+table(cnoprom)
+confusionMatrix(cnoprom, stestacno$ind_cno_fin_ult1)$overall[1] #94.6%
+
+
+
+#ctop
+ctop <- train[train$ind_ctop_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_ctop_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_ctop_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestactop <- traina2[-inTrain,]
+#RF
+system.time(fit1ctop <- train(ind_ctop_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1ctop <- predict(fit1ctop, stestactop)
+table(pred1ctop)
+confusionMatrix(pred1ctop, stestactop$ind_ctop_fin_ult1)
+confusionMatrix(pred1ctop, stestactop$ind_ctop_fin_ult1)$overall[1] #100%
+#GBM
+system.time(fit2ctop <- train(ind_ctop_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2ctop <- predict(fit2ctop, stestactop)
+table(pred2ctop)
+confusionMatrix(pred2ctop, stestactop$ind_ctop_fin_ult1)
+confusionMatrix(pred2ctop, stestactop$ind_ctop_fin_ult1)$overall[1] #100%
+#GLM
+system.time(fit3ctop <- train(ind_ctop_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3ctop <- predict(fit3ctop, stestactop)
+table(pred3ctop)
+confusionMatrix(pred3ctop, stestactop$ind_ctop_fin_ult1)
+confusionMatrix(pred3ctop, stestactop$ind_ctop_fin_ult1)$overall[1] #93.3%
+#Promedio
+ctopprom <- (as.numeric(pred2ctop) + as.numeric(pred1ctop) + as.numeric(pred3ctop) - 3)/3
+ctopprom <- round(ctopprom)
+table(ctopprom)
+confusionMatrix(ctopprom, stestactop$ind_ctop_fin_ult1)$overall[1] #100%
+
+
+
+#ctpp
+ctop <- train[train$ind_ctpp_fin_ult1 == 1, ]
+ctop <- ctop[1:500, ]
+ctop <- rbind(ctop, train[1:500, ])
+traina2 <- ctop
+table(traina2$ind_ctpp_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_ctpp_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestactpp <- traina2[-inTrain,]
+#RF
+system.time(fit1ctpp <- train(ind_ctpp_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1ctpp <- predict(fit1ctpp, stestactpp)
+table(pred1ctpp)
+confusionMatrix(pred1ctpp, stestactpp$ind_ctpp_fin_ult1)
+confusionMatrix(pred1ctpp, stestactpp$ind_ctpp_fin_ult1)$overall[1] #100%
+#GBM
+system.time(fit2ctpp <- train(ind_ctpp_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2ctpp <- predict(fit2ctpp, stestactpp)
+table(pred2ctpp)
+confusionMatrix(pred2ctpp, stestactpp$ind_ctpp_fin_ult1)
+confusionMatrix(pred2ctpp, stestactpp$ind_ctpp_fin_ult1)$overall[1] #100%
+#GLM
+system.time(fit3ctpp <- train(ind_ctpp_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3ctpp <- predict(fit3ctpp, stestactpp)
+table(pred3ctpp)
+confusionMatrix(pred3ctpp, stestactpp$ind_ctpp_fin_ult1)
+confusionMatrix(pred3ctpp, stestactpp$ind_ctpp_fin_ult1)$overall[1] #100%
+#Promedio
+ctppprom <- (as.numeric(pred2ctpp) + as.numeric(pred1ctpp) + as.numeric(pred3ctpp) - 3)/3
+ctppprom <- round(ctppprom)
+table(ctppprom)
+confusionMatrix(ctppprom, stestactpp$ind_ctpp_fin_ult1)$overall[1] #100%
+
+
+
+#dela
+ctop <- train[train$ind_dela_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_dela_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_dela_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestadela <- traina[-inTrain,]
+#RF
+system.time(fit1dela <- train(ind_dela_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1dela <- predict(fit1dela, stestadela)
+table(pred1dela)
+confusionMatrix(pred1dela, stestadela$ind_dela_fin_ult1)
+confusionMatrix(pred1dela, stestadela$ind_dela_fin_ult1)$overall[1] #98.6%
+#GBM
+system.time(fit2dela <- train(ind_dela_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2dela <- predict(fit2dela, stestadela)
+table(pred2dela)
+confusionMatrix(pred2dela, stestadela$ind_dela_fin_ult1)
+confusionMatrix(pred2dela, stestadela$ind_dela_fin_ult1)$overall[1] #98.3%
+#GLM
+system.time(fit3dela <- train(ind_dela_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3dela <- predict(fit3dela, stestadela)
+table(pred3dela)
+confusionMatrix(pred3dela, stestadela$ind_dela_fin_ult1)
+confusionMatrix(pred3dela, stestadela$ind_dela_fin_ult1)$overall[1] #92.6%
+#Promedio
+delaprom <- (as.numeric(pred2dela) + as.numeric(pred1dela) + as.numeric(pred3dela) - 3)/3
+delaprom <- round(delaprom)
+table(delaprom)
+confusionMatrix(delaprom, stestadela$ind_dela_fin_ult1)$overall[1] #98.3%
+
+
+
+#ecue
+ctop <- train[train$ind_ecue_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_ecue_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_ecue_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestaecue <- traina[-inTrain,]
+#RF
+system.time(fit1ecue <- train(ind_ecue_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1ecue <- predict(fit1ecue, stestaecue)
+table(pred1ecue)
+confusionMatrix(pred1ecue, stestaecue$ind_ecue_fin_ult1)
+confusionMatrix(pred1ecue, stestaecue$ind_ecue_fin_ult1)$overall[1] #92.98%
+#GBM
+system.time(fit2ecue <- train(ind_ecue_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2ecue <- predict(fit2ecue, stestaecue)
+table(pred2ecue)
+confusionMatrix(pred2ecue, stestaecue$ind_ecue_fin_ult1)
+confusionMatrix(pred2ecue, stestaecue$ind_ecue_fin_ult1)$overall[1] #89.3%
+#GLM
+system.time(fit3ecue <- train(ind_ecue_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3ecue <- predict(fit3ecue, stestaecue)
+table(pred3ecue)
+confusionMatrix(pred3ecue, stestaecue$ind_ecue_fin_ult1)
+confusionMatrix(pred3ecue, stestaecue$ind_ecue_fin_ult1)$overall[1] #91.97%
+#Promedio
+ecueprom <- (as.numeric(pred2ecue) + as.numeric(pred1ecue) + as.numeric(pred3ecue) - 3)/3
+ecueprom <- round(ecueprom)
+table(ecueprom)
+confusionMatrix(ecueprom, stestaecue$ind_ecue_fin_ult1)$overall[1] #91.97%
+
+
+
+#hip
+ctop <- train[train$ind_hip_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_hip_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_hip_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestahip <- traina2[-inTrain,]
+#RF
+system.time(fit1hip <- train(ind_hip_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1hip <- predict(fit1hip, stestahip)
+table(pred1hip)
+confusionMatrix(pred1hip, stestahip$ind_hip_fin_ult1)
+confusionMatrix(pred1hip, stestahip$ind_hip_fin_ult1)$overall[1] #99.5%
+#GBM
+system.time(fit2hip <- train(ind_hip_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2hip <- predict(fit2hip, stestahip)
+table(pred2hip)
+confusionMatrix(pred2hip, stestahip$ind_hip_fin_ult1)
+confusionMatrix(pred2hip, stestahip$ind_hip_fin_ult1)$overall[1] #99.3%
+#GLM
+system.time(fit3hip <- train(ind_hip_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3hip <- predict(fit3hip, stestahip)
+table(pred3hip)
+confusionMatrix(pred3hip, stestahip$ind_hip_fin_ult1)
+confusionMatrix(pred3hip, stestahip$ind_hip_fin_ult1)$overall[1] #95.67%
+#Promedio
+hipprom <- (as.numeric(pred2hip) + as.numeric(pred1hip) + as.numeric(pred3hip) - 3)/3
+hipprom <- round(hipprom)
+table(hipprom)
+confusionMatrix(hipprom, stestahip$ind_hip_fin_ult1)$overall[1] #99.5%
+
+
+
+#pres
+ctop <- train[train$ind_pres_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_pres_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_pres_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestapres <- traina2[-inTrain,]
+#RF
+system.time(fit1pres <- train(ind_pres_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1pres <- predict(fit1pres, stestapres)
+table(pred1pres)
+confusionMatrix(pred1pres, stestapres$ind_pres_fin_ult1)
+confusionMatrix(pred1pres, stestapres$ind_pres_fin_ult1)$overall[1] #98.7%
+#GBM
+system.time(fit2pres <- train(ind_pres_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2pres <- predict(fit2pres, stestapres)
+table(pred2pres)
+confusionMatrix(pred2pres, stestapres$ind_pres_fin_ult1)
+confusionMatrix(pred2pres, stestapres$ind_pres_fin_ult1)$overall[1] #99.3%
+#GLM
+system.time(fit3pres <- train(ind_pres_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3pres <- predict(fit3pres, stestapres)
+table(pred3pres)
+confusionMatrix(pred3pres, stestapres$ind_pres_fin_ult1)
+confusionMatrix(pred3pres, stestapres$ind_pres_fin_ult1)$overall[1] #94.3%
+#Promedio
+presprom <- (as.numeric(pred2pres) + as.numeric(pred1pres) + as.numeric(pred3pres) - 3)/3
+presprom <- round(presprom)
+table(presprom)
+confusionMatrix(presprom, stestapres$ind_pres_fin_ult1)$overall[1] #99.7%
+
+
+
+#reca
+ctop <- train[train$ind_reca_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_reca_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_reca_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestareca <- traina2[-inTrain,]
+#RF
+system.time(fit1reca <- train(ind_reca_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1reca <- predict(fit1reca, stestareca)
+table(pred1reca)
+confusionMatrix(pred1reca, stestareca$ind_reca_fin_ult1)
+confusionMatrix(pred1reca, stestareca$ind_reca_fin_ult1)$overall[1] #97.7%
+#GBM
+system.time(fit2reca <- train(ind_reca_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2reca <- predict(fit2reca, stestareca)
+table(pred2reca)
+confusionMatrix(pred2reca, stestareca$ind_reca_fin_ult1)
+confusionMatrix(pred2reca, stestareca$ind_reca_fin_ult1)$overall[1] #96.99%
+#GLM
+system.time(fit3reca <- train(ind_reca_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3reca <- predict(fit3reca, stestareca)
+table(pred3reca)
+confusionMatrix(pred3reca, stestareca$ind_reca_fin_ult1)
+confusionMatrix(pred3reca, stestareca$ind_reca_fin_ult1)$overall[1] #82%
+#Promedio
+recaprom <- (as.numeric(pred2reca) + as.numeric(pred1reca)-2)/3
+recaprom <- round(recaprom)
+table(recaprom)
+confusionMatrix(recaprom, stestareca$ind_reca_fin_ult1)$overall[1] #96.99%
+
+
+
+#tjcr
+ctop <- train[train$ind_tjcr_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_tjcr_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_tjcr_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestatjcr <- traina2[-inTrain,]
+#RF
+system.time(fit1tjcr <- train(ind_tjcr_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1tjcr <- predict(fit1tjcr, stestatjcr)
+table(pred1tjcr)
+confusionMatrix(pred1tjcr, stestatjcr$ind_tjcr_fin_ult1)
+confusionMatrix(pred1tjcr, stestatjcr$ind_tjcr_fin_ult1)$overall[1] #98.66%
+#GBM
+system.time(fit2tjcr <- train(ind_tjcr_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2tjcr <- predict(fit2tjcr, stestatjcr)
+table(pred2tjcr)
+confusionMatrix(pred2tjcr, stestatjcr$ind_tjcr_fin_ult1)
+confusionMatrix(pred2tjcr, stestatjcr$ind_tjcr_fin_ult1)$overall[1] #97.99%
+#GLM
+system.time(fit3tjcr <- train(ind_tjcr_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3tjcr <- predict(fit3tjcr, stestatjcr)
+table(pred3tjcr)
+confusionMatrix(pred3tjcr, stestatjcr$ind_tjcr_fin_ult1)
+confusionMatrix(pred3tjcr, stestatjcr$ind_tjcr_fin_ult1)$overall[1] #84.6%
+#Promedio
+tjcrprom <- (as.numeric(pred2tjcr) + as.numeric(pred1tjcr) + as.numeric(pred3tjcr) - 3)/3
+tjcrprom <- round(tjcrprom)
+table(tjcrprom)
+confusionMatrix(tjcrprom, stestatjcr$ind_tjcr_fin_ult1)$overall[1] #98.3%
+
+
+
+#valo
+ctop <- train[train$ind_valo_fin_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_valo_fin_ult1)
+inTrain <- createDataPartition(y=traina2$ind_valo_fin_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestavalo <- traina2[-inTrain,]
+#RF
+system.time(fit1valo <- train(ind_valo_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1valo <- predict(fit1valo, stestavalo)
+table(pred1valo)
+confusionMatrix(pred1valo, stestavalo$ind_valo_fin_ult1)
+confusionMatrix(pred1valo, stestavalo$ind_valo_fin_ult1)$overall[1] #98.7%
+#GBM
+system.time(fit2valo <- train(ind_valo_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2valo <- predict(fit2valo, stestavalo)
+table(pred2valo)
+confusionMatrix(pred2valo, stestavalo$ind_valo_fin_ult1)
+confusionMatrix(pred2valo, stestavalo$ind_valo_fin_ult1)$overall[1] #98.3%
+#GLM
+system.time(fit3valo <- train(ind_valo_fin_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3valo <- predict(fit3valo, stestavalo)
+table(pred3valo)
+confusionMatrix(pred3valo, stestavalo$ind_valo_fin_ult1)
+confusionMatrix(pred3valo, stestavalo$ind_valo_fin_ult1)$overall[1] #84.9%
+#Promedio
+valoprom <- (as.numeric(pred2valo) + as.numeric(pred1valo) + as.numeric(pred3valo) - 3)/3
+valoprom <- round(valoprom)
+table(valoprom)
+confusionMatrix(valoprom, stestavalo$ind_valo_fin_ult1)$overall[1] #98.3%
+
+
+
+#nomina
+ctop <- train[train$ind_nomina_ult1 == 1, ]
+ctop <- ctop[1:250, ]
+ctop <- rbind(ctop, train[1:750, ])
+traina2 <- ctop
+table(traina2$ind_nomina_ult1)
+inTrain <- createDataPartition(y=traina2$ind_nomina_ult1, p=0.7, list=FALSE)
+straininga <- traina2[inTrain,]
+stestanomina <- traina[-inTrain,]
+#RF
+system.time(fit1nomina <- train(ind_nomina_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "rf"))
+pred1nomina <- predict(fit1nomina, stestanomina)
+table(pred1nomina)
+confusionMatrix(pred1nomina, stestanomina$ind_nomina_ult1)
+confusionMatrix(pred1nomina, stestanomina$ind_nomina_ult1)$overall[1] #99.31%
+#GBM
+system.time(fit2nomina <- train(ind_nomina_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "gbm"))
+pred2nomina <- predict(fit2nomina, stestanomina)
+table(pred2nomina)
+confusionMatrix(pred2nomina, stestanomina$ind_nomina_ult1)
+confusionMatrix(pred2nomina, stestanomina$ind_nomina_ult1)$overall[1] #97.9%
+#GLM
+system.time(fit3nomina <- train(ind_nomina_ult1 ~ ind_empleado + sexo + age + antiguedad + indrel_1mes + conyuemp + canal_entrada + ind_actividad_cliente + claseRenta + segmento, data=straininga, method= "glm"))
+pred3nomina <- predict(fit3nomina, stestanomina)
+table(pred3nomina)
+confusionMatrix(pred3nomina, stestanomina$ind_nomina_ult1)
+confusionMatrix(pred3nomina, stestanomina$ind_nomina_ult1)$overall[1] #91.6%
+#Promedio
+nominaprom <- (as.numeric(pred2nomina) + as.numeric(pred1nomina) + as.numeric(pred3nomina) - 3)/3
+nominaprom <- round(nominaprom)
+table(nominaprom)
+confusionMatrix(nominaprom, stestanomina$ind_nomina_ult1)$overall[1] #98.7%
+```
+
+
+
+#Test Set
+Leyendo y pre procesando el test set
+```{r test, cache = TRUE}
+test <- read.csv("test_ver2.csv")
+test <- mutate(test, antiguedad = as.numeric(difftime(as.Date(fecha_dato), as.Date(fecha_alta), units="days")))
+test$renta <- as.numeric(test$renta)
+test[test$renta == 1, 23] = mean(test$renta, na.rm=TRUE)
+test <- mutate(test, claseRenta = renta)
+test[, 25] = 1 #medio
+q <- quantile(as.numeric(train$renta))
+test[test$renta < q[2], 25] = 0 #bajo
+test[test$renta > q[4], 25] = 2 #alto
+table(test$claseRenta)
+#View(head(test))
+test$claseRenta <- as.factor(test$claseRenta)
+test$ind_actividad_cliente <- as.factor(test$ind_actividad_cliente)
+test$age <- as.numeric(test$age)
+test$indrel_1mes <- as.factor(test$indrel_1mes)
+sapply(test, class)
+test <- select(test, ind_empleado, ncodpers, pais_residencia, sexo, age, antiguedad, indrel_1mes, conyuemp, canal_entrada, ind_actividad_cliente, claseRenta, segmento)
+dim(test)
+test[is.na(test[7]), 7] <- 1
+test[is.na(test[8]), 8] <- "N"
+table(is.na(test[11]))
+```
+
+Predicciones
+```{r pred, cache = TRUE}
+#CCO
+#GLM
+cco <- predict(fit2cco, test)
+
+#cno
+#RF
+cno1 <- predict(fit1cno, test)
+#GBM
+cno2 <- predict(fit2cno, test)
+#GLM
+cno3 <- predict(fit3cno, test)
+#Promedio
+cno <- (as.numeric(cno1) + as.numeric(cno2) + as.numeric(cno3) - 3)/3
+cno <- round(cnoprom)
+
+#ctop
+#RF
+ctop <- predict(fit1ctop, test)
+
+#ctpp
+#RF
+ctpp <- predict(fit1ctpp, test)
+
+#dela
+#RF
+dela <- predict(fit1dela, test)
+
+#ecue
+#RF
+ecue <- predict(fit1ecue, test)
+
+#hip
+#RF
+hip <- predict(fit1hip, test)
+
+#pres
+#RF
+pres1 <- predict(fit1pres, test)
+#GBM
+pres2 <- predict(fit2pres, test)
+#GLM
+pres3 <- predict(fit3pres, test)
+#Promedio
+pres <- (as.numeric(pres1) + as.numeric(pres2) + as.numeric(pres3) - 3)/3
+pres <- round(presprom)
+
+#reca
+#RF
+reca <- predict(fit1reca, test)
+
+#tjcr
+#RF
+tjcr <- predict(fit1tjcr, test)
+
+#valo
+#RF
+valo <- predict(fit2valo, test)
+
+#nomina
+#RF
+nomina <- predict(fit1nomina, test)
+
+#final
+final <- cbind(cco, ctop, cno1, ctpp, dela, ecue, hip, pres3, reca, tjcr, valo, nomina)
+final <- as.data.frame(final)
+final <- cbind(final, test$ncodpers)
+dim(final)
+final[,1:12] <- final[,1:12] -1
+View(final)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
